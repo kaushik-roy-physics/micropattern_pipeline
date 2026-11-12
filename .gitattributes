@@ -1,0 +1,14 @@
+# Line endings: LF in the repository and in every checkout, so the shell and
+# LSF scripts run on the cluster even when edited from Windows. Windows batch
+# files are the exception.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never diff or merge these as text
+*.png binary
+*.jpg binary
+*.pdf binary
+*.pptx binary
+*.tif binary
+*.tiff binary

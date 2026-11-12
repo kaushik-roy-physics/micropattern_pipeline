@@ -1,0 +1,13 @@
+# Everything the test suite needs (synthetic data only: no Cellpose, no GPU,
+# no microscope readers). Used by the GitHub Actions workflow.
+numpy>=1.24
+scipy>=1.10
+tifffile>=2023.7.10
+PyYAML>=6.0
+joblib>=1.3
+matplotlib>=3.7
+pandas>=2.0
+pyarrow>=12.0
+scikit-learn>=1.3
+scikit-image>=0.21
+pytest>=7.0

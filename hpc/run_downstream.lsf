@@ -1,0 +1,58 @@
+#!/bin/bash
+#BSUB -J downstream
+#BSUB -o lsf_downstream.%J.log
+#BSUB -n 4
+#BSUB -R "span[hosts=1]"
+#BSUB -M 32000
+#BSUB -W 4:00
+#
+# =============================================================================
+# Downstream analysis on a CPU node: check -> manifest -> downstream
+# =============================================================================
+# Validates the config and plate maps, builds the well/condition manifest, then
+# runs the micropattern analysis: colony detection, QC, radial profiles,
+# statistics, figures and report.html. No GPU is needed or requested - submit it
+# to a normal CPU queue. Colony detection runs one worker per slot (-n), all on
+# one host; 3-D masks of stitched z-stacks need ~3 GB per worker, so keep
+# -M at least 8000 per slot for those.
+#
+# The segmentation job submits this by itself when it finishes. Submit it by
+# hand after changing an analysis setting or a plate map (no GPU needed), or use
+# hpc/run.sh: `bash <pipeline>/hpc/run.sh analysis` / `... redo profiles`.
+#
+# This file is GENERIC - do not edit it per experiment. Settings are read from
+# hpc_job.env in the folder you submit from:
+#
+#     cd /data/Warmflash/KR/exp_033            # holds config.yaml + hpc_job.env
+#     bsub < /data/Warmflash/KR/micropattern_pipeline/hpc/run_downstream.lsf
+#
+# Like the segmentation jobs, it checks the Python environment first and
+# installs only what is missing.
+#
+# Pick a queue with -q if your cluster has no default CPU queue:
+#     bsub -q <cpu-queue> < .../run_downstream.lsf
+
+set -euo pipefail
+
+# --- Find the experiment and its settings (nothing to edit here) -------------
+# LSF records the folder you ran `bsub` from in $LS_SUBCWD. That folder is the
+# experiment: it must hold hpc_job.env (copy templates/hpc_job.env, or let the
+# GUI write it). EXP_DIR=... overrides it, e.g. for a dry run outside LSF.
+EXP_DIR="${EXP_DIR:-${LS_SUBCWD:-$PWD}}"
+SETTINGS="$EXP_DIR/hpc_job.env"
+if [ ! -f "$SETTINGS" ]; then
+    echo "ERROR: no hpc_job.env in $EXP_DIR" >&2
+    echo "Submit from your experiment folder:  cd /path/to/exp && bsub < <pipeline>/hpc/<this job file>" >&2
+    exit 1
+fi
+# tr strips Windows line endings, in case the file was edited on a PC.
+# shellcheck disable=SC1090
+source <(tr -d '\r' < "$SETTINGS")
+# One-off settings for this job only (hpc/run.sh sets them, or by hand, e.g.
+# MP_SEQ="0-4" bsub < ...): MP_<NAME> wins over <NAME> from hpc_job.env.
+for _v in $(compgen -v MP_ || true); do declare "${_v#MP_}=${!_v}"; done
+[ -f "${PIPELINE_DIR:-}/hpc/common.sh" ] || { echo "ERROR: PIPELINE_DIR in $SETTINGS is wrong: '${PIPELINE_DIR:-}'" >&2; exit 1; }
+# shellcheck disable=SC1091
+source "$PIPELINE_DIR/hpc/common.sh"
+
+run_downstream_job

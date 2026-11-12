@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Logs and backups written next to whatever ran
+pipeline.log
+lsf_*.log
+*.bak
+
+# Experiment data and results never belong in the code repository
+analysis*/
+*.nd2
+*.czi
+*.lif
+*.oir
+manifest.csv
+manifest.parquet
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Image data, per-cell tables and run artifacts (tests make their own in a temp folder)
+*.tif
+*.tiff
+*.parquet
+*.joblib
+_skipped/
+.seg_job_*
+
+# An experiment's own files copied here by mistake (they belong in the experiment folder)
+/config.yaml
+/plate_map.yaml
+/hpc_job.env

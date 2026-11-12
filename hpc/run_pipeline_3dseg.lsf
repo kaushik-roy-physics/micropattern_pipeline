@@ -1,0 +1,67 @@
+#!/bin/bash
+#BSUB -J seg3d
+#BSUB -o lsf_seg3d.%J.log
+#BSUB -q gpu-b6000
+#BSUB -n 8
+#BSUB -M 64000
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -W 16:00
+#
+# =============================================================================
+# 3D nuclear segmentation on a GPU node: load -> segment -> extract
+# =============================================================================
+# Segments each image on its full DAPI z-stack (3-D Cellpose-SAM), with
+# anisotropy from the image metadata. Use for z-stack folders only.
+#
+# This file is GENERIC - do not edit it per experiment. Everything specific to
+# your experiment (paths, which steps, which datasets, which images) is read
+# from hpc_job.env in the folder you submit from:
+#
+#     cd /data/Warmflash/KR/exp_033            # holds config.yaml + hpc_job.env
+#     bsub < /data/Warmflash/KR/micropattern_pipeline/hpc/run_pipeline_3dseg.lsf
+#
+# The job log (lsf_seg3d.<jobid>.log) and pipeline.log land in that folder.
+#
+# Resources: the #BSUB lines above are sensible defaults. Override any of them
+# on the command line instead of editing this file, e.g. a longer wall time:
+#     bsub -W 24:00 < .../run_pipeline_3dseg.lsf
+#
+# When it finishes successfully it submits run_downstream.lsf by itself (the
+# analysis, on a CPU node), so one bsub runs everything. With both a 2-D and a
+# 3-D job, the one that finishes last does this. THEN_ANALYSIS="false" in
+# hpc_job.env turns it off.
+#
+# Safe to resubmit: finished images are skipped (per-image checkpoints). To
+# redo work, use hpc/run.sh (e.g. `bash <pipeline>/hpc/run.sh reseg`), or set
+# FORCE / SEG_FORCE_STEPS in hpc_job.env.
+#
+# Python environment: before anything else the job checks VENV_DIR (a few
+# seconds) and installs only what is missing or wrong: PyTorch from the CUDA
+# 12.8 index (Blackwell sm_120), the rest from requirements.txt. Then it runs a
+# real kernel on the GPU and stops if that fails. FRESH_VENV="true" in
+# hpc_job.env rebuilds the environment from scratch.
+
+set -euo pipefail
+
+# --- Find the experiment and its settings (nothing to edit here) -------------
+# LSF records the folder you ran `bsub` from in $LS_SUBCWD. That folder is the
+# experiment: it must hold hpc_job.env (copy templates/hpc_job.env, or let the
+# GUI write it). EXP_DIR=... overrides it, e.g. for a dry run outside LSF.
+EXP_DIR="${EXP_DIR:-${LS_SUBCWD:-$PWD}}"
+SETTINGS="$EXP_DIR/hpc_job.env"
+if [ ! -f "$SETTINGS" ]; then
+    echo "ERROR: no hpc_job.env in $EXP_DIR" >&2
+    echo "Submit from your experiment folder:  cd /path/to/exp && bsub < <pipeline>/hpc/<this job file>" >&2
+    exit 1
+fi
+# tr strips Windows line endings, in case the file was edited on a PC.
+# shellcheck disable=SC1090
+source <(tr -d '\r' < "$SETTINGS")
+# One-off settings for this job only (hpc/run.sh sets them, or by hand, e.g.
+# MP_SEQ="0-4" bsub < ...): MP_<NAME> wins over <NAME> from hpc_job.env.
+for _v in $(compgen -v MP_ || true); do declare "${_v#MP_}=${!_v}"; done
+[ -f "${PIPELINE_DIR:-}/hpc/common.sh" ] || { echo "ERROR: PIPELINE_DIR in $SETTINGS is wrong: '${PIPELINE_DIR:-}'" >&2; exit 1; }
+# shellcheck disable=SC1091
+source "$PIPELINE_DIR/hpc/common.sh"
+
+run_segmentation 3d

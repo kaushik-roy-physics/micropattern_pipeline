@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Pre-commit check, switched on per clone with
+#     git config core.hooksPath .githooks
+# Refuses a commit that would add data, results or large files to the code
+# repository, or a Python file that does not compile. Skip once with
+# `git commit --no-verify` if you really mean it.
+# This hook is identical in micropattern_pipeline and analysis_pipeline_v2.
+set -u
+
+MAX_KB=1024
+fail=0
+
+# The syntax check needs Python 3.8 or newer (the code uses := and
+# `from __future__ import annotations`); the cluster login node's system python3
+# is older, so there the check is skipped rather than failing every file.
+py=""
+for cand in python3 python; do
+    if command -v "$cand" >/dev/null 2>&1 &&
+       "$cand" -c 'import sys; sys.exit(sys.version_info < (3, 8))' 2>/dev/null; then
+        py=$(command -v "$cand"); break
+    fi
+done
+[ -z "$py" ] && echo "pre-commit: no Python 3.8+ found, skipping the syntax check"
+
+while IFS= read -r -d '' f; do
+    [ -f "$f" ] || continue
+    case "$f" in
+        *.nd2|*.czi|*.lif|*.oir|*.tif|*.tiff|*.parquet|*.joblib|*.npy|*.npz|*.h5)
+            echo "pre-commit: $f looks like data; data and results stay out of the code repository"
+            fail=1 ;;
+    esac
+    kb=$(( $(wc -c < "$f") / 1024 ))
+    if [ "$kb" -gt "$MAX_KB" ]; then
+        echo "pre-commit: $f is ${kb} KB (limit ${MAX_KB} KB)"
+        fail=1
+    fi
+    case "$f" in
+        *.py)
+            if [ -n "$py" ] && ! "$py" - "$f" <<'EOF'
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+compile(src, sys.argv[1], "exec")
+EOF
+            then
+                echo "pre-commit: $f does not compile"
+                fail=1
+            fi ;;
+    esac
+done < <(git diff --cached --name-only --diff-filter=ACM -z)
+
+if [ "$fail" != 0 ]; then
+    echo "pre-commit: commit refused (git commit --no-verify to override)"
+    exit 1
+fi
+exit 0

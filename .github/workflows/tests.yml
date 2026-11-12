@@ -1,0 +1,23 @@
+# Runs the synthetic test suite on every push and pull request.
+# Active once the repository has a GitHub remote; inert otherwise.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: requirements-test.txt
+      - run: pip install -r requirements-test.txt
+      - run: python -m pytest -q -p no:cacheprovider tests/
+        env:
+          MPLBACKEND: Agg

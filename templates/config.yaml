@@ -1,0 +1,390 @@
+# =============================================================================
+# Micropattern radial-profile pipeline: one config for the whole experiment
+# =============================================================================
+# `defaults:` holds everything shared. `datasets:` lists the acquisition folders;
+# each entry is deep-merged over the defaults, so a 2-D MIP folder and a 3-D
+# z-stack folder, or one folder per antibody panel, live in this one file.
+# Select a subset on the command line with `--datasets <name> …`.
+# Written by the GUI (gui/app.py); safe to edit by hand.
+
+defaults:
+
+  # -------------------------------------------------------------------------
+  # Input
+  # -------------------------------------------------------------------------
+  input:
+    recursive: true              # descend into sub-directories
+    # Sibling folders that never hold input images. Pipeline output directories
+    # are skipped automatically; list anything else here (exported JPEGs, old
+    # analysis folders). This is a correctness setting as much as a speed one:
+    # with .tif in file_types, an export folder would be ingested as input data.
+    exclude_dirs: [analysis, jpegs, pngs, figures]
+    file_types: [.nd2, .tif, .tiff, .ome.tif, .oir, .czi, .lif]  # extensions treated as input images
+    # Run on a subset of the images (default: all). Seq numbers as written in the
+    # filename (Seq0042 -> 42), e.g. "0-9, 15"; wells e.g. "1-3" or "C1-C4".
+    # Both given = an image must match both. --seq / --wells override this.
+    select: {seq: null, wells: null}
+
+  # -------------------------------------------------------------------------
+  # Channel layout (0-based indices into the image's channel axis)
+  # -------------------------------------------------------------------------
+  channels:
+    dapi_index: 0                # nuclear (DAPI) channel; used for segmentation
+    has_cyto: false              # is there a cytoplasm/membrane channel?
+    cyto_index: 1                # its index (used only when has_cyto + use_cyto)
+    marker_channels: [1, 2, 3]   # channels to quantify
+
+  # -------------------------------------------------------------------------
+  # Segmentation (Cellpose-SAM)
+  # -------------------------------------------------------------------------
+  segmentation:
+    mode: 2d                     # 2d | 3d | null. null/2d → 2-D on the DAPI MIP.
+    use_cyto: false              # pass DAPI + cyto together to Cellpose (2-channel)
+    pretrained_model: null       # null → Cellpose-SAM (cpsam); or a path to a fine-tuned model
+
+    exclude_brightest_percentile: 99.9  # clip pixels above this percentile pre-segmentation
+    flow_threshold: 0.4          # ↑ keeps more masks, ↓ removes ill-defined ones
+    cellprob_threshold: 0.0      # ↓ detects dimmer nuclei, ↑ is stricter
+    min_mask_size: 15            # absolute floor (px in 2-D, voxels in 3-D)
+
+    anisotropy: null             # 3-D only: null → pixel_size_z / pixel_size_x from metadata
+    batch_size: 8
+
+    adaptive_size_filter: true   # drop masks below exp(median_log − k·IQR_upper) of log(areas)
+    adaptive_size_k: 2.5         # ↑ keeps more small masks
+    adaptive_dapi_filter: false  # also drop masks with anomalously low mean DAPI
+    adaptive_dapi_k: 2.5
+
+  # -------------------------------------------------------------------------
+  # Intensity extraction
+  # -------------------------------------------------------------------------
+  intensity:
+    normalize_by_dapi: true      # also store marker / DAPI per-nucleus ratios
+    # Detector ceiling used for the per-channel saturation check written into
+    # every joblib (and from there into analysis/field_channel_qc.csv).
+    # null → the dtype maximum, i.e. 65535 for a 16-bit camera. Set it
+    # explicitly for a camera that digitizes fewer bits into a 16-bit container:
+    # a 12-bit sensor clips at 4095 and would otherwise never register as
+    # saturated at all.
+    saturation_value: null
+
+  # -------------------------------------------------------------------------
+  # Experiment annotation (well/condition manifest)
+  # -------------------------------------------------------------------------
+  experiment:
+    manifest_basename: manifest  # written at each dataset root
+
+  # -------------------------------------------------------------------------
+  # QC figures produced by the image-processing steps
+  # -------------------------------------------------------------------------
+  visualization:
+    dpi: 300
+    overlay_clip_percentile: [1, 99]
+
+# ---------------------------------------------------------------------------
+# Datasets: one entry per acquisition folder
+# ---------------------------------------------------------------------------
+# Only state what differs from `defaults`. Names become the `dataset` column in
+# the manifest, so downstream can pool or facet across them.
+datasets: []                     # one entry per acquisition folder (written by the GUI)
+  # A z-stack folder segmented in 3-D needs nothing but its own mode:
+  #   - {name: zstacks, directory: ./zstacks, segmentation: {mode: 3d}}
+  # One folder per stain set is the simplest arrangement: just list them.
+  # Several stain sets acquired into ONE folder: declare `stain_sweeps:` in that
+  # folder's plate_map.yaml. Run `python main.py check` before processing.
+
+# ===========================================================================
+# Downstream analysis (CPU): colonies, radial profiles, statistics
+# ===========================================================================
+# Reads each dataset's manifest, the per-image segmentation + intensities, and
+# writes tables, figures and an HTML report under `results_dir`.
+# Steps: colony → assemble → qc → thresholds → profiles → aggregate → compare → report
+downstream:
+  # Output folder, relative to this file. auto → named after the segmentation
+  # results analyzed: ./analysis_2d, ./analysis_3d or ./analysis_2d_3d.
+  results_dir: auto
+  # Which segmentation results to analyze. Each image folder holds one
+  # segmentation (2-D or 3-D); datasets without results are left out.
+  #   auto  every dataset that has results (2-D and 3-D side by side, never pooled)
+  #   2d | 3d  only datasets whose results are in that mode
+  seg_mode: auto                 # auto | 2d | 3d | both
+  manifest_basename: manifest
+
+  # Canonicalize marker spellings so 'sox2' and 'SOX2' are one marker.
+  marker_aliases: {}             # e.g. {tbxt: TBXT, bra: TBXT}
+  # Markers NOT to analyze, by name, whatever channel they are on: e.g. E-CAD
+  # imaged together with FOXA2 in channel 1 (the stain set says which wells carry
+  # which). The nuclear channel is never analyzed.
+  exclude_markers: [DAPI]        # e.g. [DAPI, ECAD]
+  markers_order: null            # optional display order, e.g. [SOX2, TBXT, ISL1]
+
+  # Which steps run (null → all registered steps, dependency-ordered).
+  steps: null
+  # Optional analyses to leave out (default: none, everything runs). Any of
+  # boundary, coexpression, multimarker, compare, effects, signaling_summary.
+  # The core (colony, assemble, qc, thresholds, profiles, aggregate, report)
+  # always runs. A skipped step's earlier outputs move to <analysis>/_skipped/.
+  skip_steps: []                 # e.g. [coexpression, effects]
+  # Experiment-specific analyses that register their own steps. Modules are
+  # imported relative to this config's directory.
+  extra_modules: []              # e.g. [my_analysis]
+
+  # -------------------------------------------------------------------------
+  # What defines a condition (the groups that are compared)
+  # -------------------------------------------------------------------------
+  conditions:
+    condition_key: [treatment]   # plate-map column(s) defining a condition, e.g. [class] for cell lines
+    control_column: class        # plate-map column declaring negative-control wells (for % positive)
+    control_values: [pluripotent, control, negative_control]
+    order: null                  # explicit condition order; null → controls first, then sorted
+    # Crossed design (e.g. condition_key: [line, dose]): name one column here to
+    # compare the rest WITHIN each of its values: one figure set and one set of
+    # tests per value. Must be part of condition_key.
+    facet_key: null              # e.g. [dose]
+    marker_controls: {}          # per-marker negative control, e.g. {SOX2: {control_values: [bmp_high]}}
+    axis_label: null             # condition-axis label, e.g. "BMP4 (ng/mL)"; null → from condition_key
+
+  # -------------------------------------------------------------------------
+  # Intensity space per marker, and the scope its shared scale and gate span
+  # -------------------------------------------------------------------------
+  # space: dapi_norm (marker / nuclear stain per nucleus) removes
+  #   nucleus-to-nucleus DNA-stain variation for nuclear markers; raw keeps the
+  #   measured intensity. Use raw for membrane or cytoplasmic markers, and for
+  #   EVERY marker when the nuclear channel is not a DNA stain (e.g. H2B-GFP,
+  #   whose level varies from cell to cell): dividing by it adds noise.
+  #   Signaling markers ignore this (see signaling: below).
+  # scope: the set of colonies that share ONE intensity scale (and one
+  #   positivity gate):
+  #   panel       dataset × plate_id × stain_set   (default)
+  #   plate       plate_id × seg_mode              (pools panels of one plate)
+  #   experiment  seg_mode                         (one scale everywhere)
+  #   Colonies on one scale must have been stained and imaged alike: one
+  #   antibody mix, one exposure. That is what makes their levels comparable.
+  default_space: dapi_norm       # dapi_norm | raw
+  nuclear_stain: auto           # dna | histone | auto (from the nuclear channel's name, e.g. H2B → histone).
+                                 #   A histone denominator (dapi_norm) is warned about and named in every caption
+  markers: {}                    # e.g. {ISL1: {scope: plate}, ECAD: {space: raw}}
+
+  # -------------------------------------------------------------------------
+  # Colony detection (per image)
+  # -------------------------------------------------------------------------
+  colony:
+    pixel_size_um: null          # µm per pixel; null → image metadata (an image with neither fails)
+    close_radius_um: 15          # closing radius that bridges gaps between nuclei (≈ 1-2 nuclei)
+    open_radius_um: 0            # >0 severs thin bridges to a touching neighbor colony
+    min_colony_area_um2: 5000    # smaller pieces are debris, not neighboring colonies
+    main_colony: largest         # largest | center (the piece nearest the image center)
+    edge_distance: auto          # auto | mask | circle; auto uses the circle fit for clipped colonies
+    max_border_fraction: 0.15    # rim fraction on the image border above which a colony is 'clipped'
+    trim_outside_circle: 1.1     # cut cells beyond 1.1 × the fitted pattern radius (escaped cells); 0 = off
+    expected_diameter_um: null   # nominal pattern diameter (µm), e.g. 500: used by QC
+    diameter_column: null        # plate-map column with a per-well diameter, e.g. diameter_um
+    n_jobs: null                 # parallel workers; null → LSF slots, else up to 8 cores
+    overlay: true                # write colony_overlay.png per image (the QC picture)
+
+  # -------------------------------------------------------------------------
+  # Quality control: flags are reported; exclude_flags decides what is dropped
+  # -------------------------------------------------------------------------
+  qc:
+    # Flags: failed, clipped, size, shape, neighbor, outside, low_count, field.
+    # Colonies with any flag listed here are left out of every profile, scale,
+    # gate and test (and listed in the report). [all] drops any flagged colony.
+    exclude_flags: [failed]      # e.g. [failed, size, shape, neighbor]
+    max_diameter_deviation: 0.15 # |diameter − expected| / expected above this → 'size'
+    min_fill_ratio: 0.85         # mask area / fitted-circle area below this → 'shape' (unclipped only)
+    max_fit_rms_rel: 0.08        # rim deviation from the circle / R above this → 'shape'
+    max_neighbour_ratio: 0.5     # a neighbor this large relative to the main colony → 'neighbour'
+    max_outside_fraction: 0.2    # nuclei outside the main colony above this fraction → 'outside'
+    min_nuclei_per_colony: 200   # fewer nuclei in the colony → 'low_count'
+    outlier_z: 3.5               # robust z of count / DAPI / nuclear size among colonies of a condition → 'field'
+    field_min_rel_dev: 0.2       # …and at least this relative deviation from the condition median
+    min_cells_per_field: 20      # fewer nuclei in the whole image → 'field'
+    # Per-marker channel checks (qc_marker_colonies.csv): reported, never dropped.
+    marker_outlier_z: 3.5        # robust z of a colony's marker median within its well
+    marker_min_rel_dev: 0.25     # …and at least this relative deviation from the well median
+    max_saturated_fraction: 0.001  # >0.1 % of pixels at the detector ceiling → flagged
+    min_signal_to_background: 1.05 # nuclei this close to their own background → flagged
+    # Nuclei whose median is clipped at the detector ceiling are bright debris: left out of
+    # every analysis and listed in tables/qc_saturated_nuclei.csv.
+    drop_saturated_nuclei: true
+    saturation_ceiling: null     # null → each channel's ceiling from extraction; 4095 for 12-bit data in 16-bit files
+    saturation_fraction: 1.0     # flag at ≥ this × ceiling
+
+  # -------------------------------------------------------------------------
+  # Positivity thresholds: the "% positive vs distance" readout
+  # -------------------------------------------------------------------------
+  # Each marker's gate is the (1 − fpr) quantile of its negative-control wells.
+  # With no control, a validated two-population (GMM) fit is tried; if that
+  # fails the marker gets no gate and no % positive profile: never a guess.
+  thresholds:
+    scope: panel                 # default scope (see `markers:` above)
+    method: control_percentile   # control_percentile (recommended) | mad
+    fpr: 0.01                    # → the control's P99: ≤1 % of true negatives called positive
+    sigma: 4.5                   # only used by method: mad
+    min_control_cells: 200       # below this the control is not trusted → GMM fallback
+    loo_warn_pct: 25             # warn when leaving one control colony out moves the gate by more (%)
+    gmm:                         # fallback when a marker has no usable control
+      enabled: true
+      log_transform: true        # intensities are ~log-normal
+      min_cells: 200
+      min_bic_gain: 10.0         # 2-component fit must beat 1-component by this
+      min_separation: 2.0        # standardized distance between the two modes
+      min_weight: 0.05           # smallest component must hold ≥5 % of the mass
+      n_init: 3
+      random_state: 0
+
+  # -------------------------------------------------------------------------
+  # Radial profiles
+  # -------------------------------------------------------------------------
+  profiles:
+    bin_um: 10                   # µm grid: bin width, measured inward from the edge (≈ 1 nucleus)
+    max_um: null                 # µm grid extent; null → the largest colony's radius
+    n_norm_bins: 25              # normalized grid (0 = edge, 1 = center): number of bins
+    min_nuclei_per_bin: 10       # a colony's bin needs this many nuclei, else it is a gap
+    robust_percentiles: [1, 99]  # shared-scale anchors (0 and 1) from all nuclei in the scope
+    min_replicates: 3            # a well/condition mean needs this many colonies (or wells) at a point
+    ci: 95                       # confidence level (%) for every band
+    colony_binning: quantile     # per-colony figures: quantile (≈ equal nuclei) | equal_area | fixed
+    colony_n_bins: 20            # bins in each per-colony figure
+    ci_method: t                 # per-colony figures: t | bootstrap
+    bootstrap_n: 1000            # only for ci_method: bootstrap
+    colony_figures: true         # one profile figure per colony (figures/colony_profiles/)
+
+  # -------------------------------------------------------------------------
+  # All markers together (needs 2+ analysis markers; skipped otherwise)
+  # figures/multimarker_profiles/{colonies,wells}/, tables/multimarker_trends.csv
+  # -------------------------------------------------------------------------
+  multimarker:
+    window_bins: 1               # local trend at bin i compares bin i-k with bin i+k
+    z_crit: 1.96                 # |slope / SE| at or above this is marked as a trend
+    z_display_max: 4             # trend-strip color scale saturates here
+    colony_figures: true         # one stacked figure per colony (µm grid)
+    well_figures: true           # one stacked figure per well (normalized grid)
+
+  # -------------------------------------------------------------------------
+  # Pairwise co-expression in space (needs 2+ markers in one stain set)
+  # figures/coexpression/pages/{colonies,wells}/ (combined pages),
+  # figures/coexpression/panels/<level>/<kind>/ (one panel per figure, for slides),
+  # tables/coexpression_{colonies,wells}.csv
+  # -------------------------------------------------------------------------
+  coexpression:
+    pairs: auto                  # auto (every pair within a stain set) | [[SOX2, TBXT], ...]
+    method: spearman             # spearman | pearson
+    bin_um: 25                   # µm grid for the co-expression readouts (coarser than profiles)
+    n_norm_bins: 10              # normalized grid for the co-expression readouts
+    min_nuclei_per_bin: 20       # fewer nuclei in a colony's bin → no value there
+    n_bands: 4                   # radial bands in the split scatter panels
+    max_points: 4000             # per-colony scatter: nuclei drawn (display only)
+    points_per_colony: 1500      # well scatter: same number of nuclei from each colony, at most this
+    colony_figures: true         # one page per colony (µm grid)
+    well_figures: true           # one page per well (normalized grid)
+    panels: [wells]              # also each panel as its own slide-sized figure: [wells], [wells, colonies] or []
+    panel_kinds: [scatter, bands, correlation, double_positive, trajectory, map]
+
+  # -------------------------------------------------------------------------
+  # Boundaries and peaks: a few numbers per colony, each with an uncertainty
+  # tables/boundary_{colonies,summary,fits}.csv, figures/boundary/, and the
+  # boundary line ± SE on every colony profile.
+  # -------------------------------------------------------------------------
+  boundary:
+    enabled: true
+    pairs: auto                  # facing markers (one edge-high, one center-high) of one stain set; or [[EDGE_MARKER, CENTER_MARKER], ...]
+    peak_markers: auto           # auto = signaling markers (b-CAT ...); or a list; [] = none
+    bin_um: 10                   # fitting bins (µm)
+    n_sectors: 12                # angular blocks resampled by the per-colony bootstrap
+    n_boot: 200                  # bootstrap replicates per colony
+    window_um: 50                # ± around the crossing for the double-positive fraction
+    edge_exclude_um: 25          # the interior-peak search ignores this outermost band
+    peak_smooth_um: 15           # Gaussian smoothing (σ, µm) of the peak profile
+    min_peak_ratio: 1.05         # an interior peak must be ≥ 5 % above its trough
+    min_amplitude: 0.1           # an intensity transition must span ≥ this on the shared scale
+    min_support: 0.8             # a colony value is used when ≥ 80 % of replicates find it
+    bin_check: [fixed:5, fixed:20, quantile:20]  # re-fit with these bins: do positions move? [] = off
+    roughness:                   # border radius vs angle, roughness, angular registration (gated markers)
+      enabled: true
+      n_sectors: 16              # angular sectors (~100 µm of arc at 250 µm from the center)
+      min_sector_nuclei: 40      # nuclei in a sector's fit window, else no border there
+      min_sectors: 8             # sectors with a border, else no roughness for the colony
+      profile_half_um: 150       # registered profiles span ± this around the border
+
+  # -------------------------------------------------------------------------
+  # Effects, trends, variance components and power (from every per-colony number)
+  # tables/effects_{variance,power,vs_reference,trends}.csv, figures/effects/
+  # -------------------------------------------------------------------------
+  effects:
+    enabled: true
+    reference: auto              # auto: lowest level of the trend column within each group; or a condition label; null = none
+    trend_columns: auto          # numeric condition columns (dose, time, diameter) with ≥ min_levels levels; or a list
+    min_levels: 3
+    scale: auto                  # auto (log10 when positive levels span ≥ 10×) | linear | log
+    exponential_columns: []      # time columns that also get a decay time constant τ, e.g. [time_h]
+    n_boot: 2000
+    n_perm: 5000
+    power:
+      alpha: 0.05
+      power: 0.8
+      experiments: [2, 3, 4, 6]  # designs to evaluate (independent experiments per condition)
+      wells_per_experiment: null # null → as observed
+      colonies_per_well: null    # null → as observed
+      assumed_experiment_sd: null  # when it cannot be estimated: × sd_well (or sd_colony), e.g. 1.0
+      targets: []                # e.g. [{metric: crossing_um, delta: 20}, {metric: peak_ratio, delta_rel: 0.3}]
+
+  # -------------------------------------------------------------------------
+  # Signaling markers (beta-catenin, SMAD2/3, SMAD2, SMAD3, SMAD4, SMAD1, ...)
+  # Recognized by name, whatever the spelling (b-CAT, β-catenin, Smad2-3, ...).
+  # They are read by WHERE the protein is, never gated into % positive, and
+  # shown relative to the reference wells (or, with reference_values: [], in
+  # background-subtracted a.u.). Does nothing without such a marker.
+  # figures/signaling/ (ring QC), figures/signaling_summary/,
+  # tables/signaling_reference.csv, tables/signaling_colonies.csv
+  # -------------------------------------------------------------------------
+  signaling:
+    enabled: true                # false → every marker is a standard marker
+    markers: {}                  # add / override: {pSMAD1: nuclear, YAP1: nc, SMAD4: none}
+    nuclear_space: background_subtracted  # nuclear readout: background_subtracted | raw | dapi_norm
+    reference_column: null       # plate-map column of the reference wells; null → conditions.control_column
+    reference_values: null       # e.g. [pluripotent]; null → conditions.control_values
+    gate: false                  # true → also fit % positive gates for signaling markers
+    ring_inner_um: 1.0           # N:C cytoplasmic ring starts this far outside the nucleus...
+    ring_outer_um: 4.0           # ...and ends here (grown in-plane, split between neighbors)
+    background: local            # local = median of cell-free pixels in a band just outside the cells
+                                 #   (immune to vignetting and to gaps inside a colony); image = all cell-free pixels
+    local_band_um: 60            # band width, starting free_distance_um beyond the cells
+    free_distance_um: 15         # background pixels are farther than this from every nucleus
+    min_free_px: 2000            # fewer such pixels → next method (local → image → camera offset)
+    body_k: 3.0                  # ring pixels must clear background + k·MAD (drops gaps, the empty rim); 0 = all
+    min_ring_px: 10              # fewer ring pixels → no N:C for that nucleus
+    qc_images: true              # signaling_rings.png per image + figures/signaling/ gallery
+
+  # -------------------------------------------------------------------------
+  # Replication: what counts as n
+  # -------------------------------------------------------------------------
+  stats:
+    # auto → wells when every condition has ≥ min_wells_for_well_unit wells
+    # (colonies in one well share seeding, dose and staining, so are not
+    # independent); otherwise colonies, with a caveat written into the report.
+    replicate: auto              # auto | colony | well
+    min_wells_for_well_unit: 3
+    # Independent differentiations: name the plate-map column that identifies them.
+    # With ≥ min_experiments_for_unit of them in every condition the experiment
+    # is the replicate (colonies → wells → experiments; n = experiments) for the
+    # profiles, the boundary summary and the effects step. null = no such column.
+    experiment_column: null      # e.g. experiment, differentiation, batch
+    min_experiments_for_unit: 2
+    random_state: 0
+
+  # -------------------------------------------------------------------------
+  # Comparison of conditions
+  # -------------------------------------------------------------------------
+  compare:
+    n_permutations: 5000         # permutation-test resolution (small designs are enumerated exactly)
+    edge_band_um: 50             # width of the 'edge_value' feature band (µm from the edge)
+
+  # -------------------------------------------------------------------------
+  # Figures
+  # -------------------------------------------------------------------------
+  visualization:
+    dpi: 200                     # 300+ for final figures
+    cap_percentile: 99.9         # display-only outlier cap in histograms
+    ylim: shared                 # shared: one y-range per marker in every colony/well figure (comparable); auto: each panel autoscales
+    caption: null                # free text appended to every normalization caption, e.g. the cell line
