@@ -7,6 +7,19 @@ Each entry says when a change alters numbers in existing results.
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-12
+
+### Fixed
+- Power tables were optimistic for small designs: the minimum detectable
+  difference is a t-test calculation, but the comparisons are permutation tests,
+  which with E vs E replicates cannot go below p = 2 / C(2E, E) (0.1 for 3 vs 3).
+  `effects_power.csv` now carries `smallest_possible_p` and
+  `permutation_can_reach_alpha`; the power for a target effect is 0 where alpha
+  cannot be reached, and the power figure draws those points hollow.
+  **Rerun `effects`** to update existing power tables; no other numbers change.
+- `docs/STATISTICAL_METHODS.md` said the size filter drops merged nuclei. It only
+  removes masks that are too small; merges stay and must be checked on the overlays.
+
 ## [1.0.0] - 2026-11-12
 
 First version under version control. It collects the work of 2026-10 and

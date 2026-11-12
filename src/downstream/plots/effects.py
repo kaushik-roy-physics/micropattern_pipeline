@@ -164,6 +164,11 @@ def power_curves(power: pd.DataFrame, out_path, title: str = ""):
         for i, (src, g) in enumerate(p.groupby("experiment_sd_source", sort=False)):
             ax.plot(g["experiments"], g["mdd"], color=style.color(i), ls=styles[src],
                     marker=style.MARKERS[i], ms=4)
+            if "permutation_can_reach_alpha" in g:
+                bad = ~g["permutation_can_reach_alpha"].astype(bool)
+                if bad.any():                    # hollow: a permutation test cannot reach alpha
+                    ax.plot(g.loc[bad, "experiments"], g.loc[bad, "mdd"], ls="none",
+                            marker=style.MARKERS[i], ms=7, mfc="white", mec=style.color(i))
         if "target_delta" in p and p["target_delta"].notna().any():
             ax.axhline(float(p["target_delta"].dropna().iloc[0]), color=style.THRESHOLD,
                        lw=1.0, ls=":")
@@ -179,6 +184,12 @@ def power_curves(power: pd.DataFrame, out_path, title: str = ""):
                       label=f"between-experiment SD: {s}") for i, s in enumerate(sources)]
     if "target_delta" in power and power["target_delta"].notna().any():
         handles.append(Line2D([], [], color=style.THRESHOLD, ls=":", label="target effect"))
+    if ("permutation_can_reach_alpha" in power
+            and not power["permutation_can_reach_alpha"].astype(bool).all()):
+        handles.append(Line2D([], [], color=style.ANNOTATION,
+                              ls="none", marker="o", mfc="white",
+                              label="hollow: too few experiments for p < alpha "
+                                    "with a permutation test"))
     fig.legend(handles=handles, loc="lower center", ncol=1, fontsize=7.5, frameon=False)
     fig.suptitle(title, fontsize=10)
     fig.tight_layout(rect=(0, (0.25 * len(handles) + 0.2) / fig.get_figheight(), 1, 1))

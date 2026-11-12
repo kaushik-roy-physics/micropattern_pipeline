@@ -1690,8 +1690,10 @@ def step_effects(ctx) -> None:
                 var = ef_mod.group_mean_var(pr["sd_experiment_used"], vc["sd_well"],
                                             vc["sd_colony"], pr["experiments"],
                                             pr["wells_per_experiment"], pr["colonies_per_well"])
-                out.update(target_delta=delta, power_at_target=ef_mod.power_for(
-                    delta, var, pr["experiments"], float(prm["power"]["alpha"])))
+                # A permutation test that cannot reach alpha has no power at all.
+                out.update(target_delta=delta, power_at_target=(ef_mod.power_for(
+                    delta, var, pr["experiments"], float(prm["power"]["alpha"]))
+                    if pr["permutation_can_reach_alpha"] else 0.0))
             power_rows.append(out)
     ctx.write_table(pd.DataFrame(var_rows), "effects_variance.csv")
     ctx.write_table(pd.DataFrame(power_rows), "effects_power.csv")

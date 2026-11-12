@@ -335,6 +335,12 @@ def power_for(delta: float, var_mean: float, E: int, alpha: float) -> float:
     return float(np.clip(p, 0.0, 1.0))
 
 
+def permutation_floor(E: int) -> float:
+    """Smallest two-sided p an exact permutation test of E vs E replicates can give:
+    2 / C(2E, E). 3 vs 3 cannot go below 0.1, so it can never reach p < 0.05."""
+    return 2.0 / comb(2 * int(E), int(E)) if E >= 1 else np.nan
+
+
 def power_table(vc: dict, prm: dict, wells: float, colonies: float, ref_mean: float) -> list[dict]:
     """MDD (and power for matching targets) per number of experiments and assumption."""
     pw = prm["power"]
@@ -362,6 +368,10 @@ def power_table(vc: dict, prm: dict, wells: float, colonies: float, ref_mean: fl
                    "experiments": int(E), "wells_per_experiment": W, "colonies_per_well": C,
                    "mdd": mdd(v, int(E), alpha, target_power)}
             row["mdd_rel"] = row["mdd"] / abs(ref_mean) if ref_mean else np.nan
+            # The MDD is a t-test calculation; the pipeline's comparisons are
+            # permutation tests, which with few replicates cannot reach alpha at all.
+            row["smallest_possible_p"] = permutation_floor(int(E))
+            row["permutation_can_reach_alpha"] = bool(row["smallest_possible_p"] <= alpha)
             rows.append(row)
     return rows
 

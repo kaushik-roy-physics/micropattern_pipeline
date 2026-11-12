@@ -134,7 +134,9 @@ pipeline has n = colonies or n = wells, never nuclei (§5).
 ## 1. From pixels to a value per nucleus
 
 **Segmentation.** Cellpose-SAM, in 2-D on the DAPI maximum projection or in 3-D
-on the z-stack; masks are size-filtered on a log scale to drop debris and merges.
+on the z-stack; masks smaller than the typical nucleus (on a log scale) are dropped as
+fragments and debris. The filter has no upper cut, so merged nuclei are not removed:
+look at the segmentation overlays.
 
 **Per-nucleus intensity.** The median of each marker's pixels inside the nuclear
 mask: robust to hot pixels and to bleed at the nuclear boundary.
@@ -733,6 +735,11 @@ per experiment and C colonies per well the variance of a condition mean is
 two conditions is (t₁₋α/₂ + t_power)·√(2·var) with df = 2(E − 1); in simulation
 the stated 80 % power is achieved (76 % over 600 simulated studies). When σ_E is
 not estimable it is taken as 0 and labeled a lower bound;
+The MDD is a t-test calculation, while the comparisons are permutation tests:
+with E vs E replicates those cannot go below p = 2 / C(2E, E), so with 3 per condition
+p < 0.05 is impossible. Each row says so (`smallest_possible_p`,
+`permutation_can_reach_alpha`), the power at a target is then 0, and the figure draws
+those points hollow.
 `power.assumed_experiment_sd` adds a scenario with an explicit assumption, and
 `power.targets` reports the power for named effect sizes.
 
